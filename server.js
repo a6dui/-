@@ -1,133 +1,257 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const path = require('path');
-const https = require('https'); // Import native https module
+const https = require('https');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+const BOT_TOKEN = process.env.BOT_TOKEN || '';
+const CHAT_ID = process.env.CHAT_ID || '';
+const POLL_INTERVAL_MINUTES = Number(process.env.POLL_INTERVAL_MINUTES || 10);
+const HYPE_THRESHOLD = Number(process.env.HYPE_THRESHOLD || 5);
+
+const FEEDS = [
+  { name: 'HLTV', url: 'https://www.hltv.org/rss/news' },
+  { name: 'ESL Counter-Strike', url: 'https://pro.eslgaming.com/csgo/proleague/feed/' }
+];
+
+const HYPE_RULES = [
+  { score: 4, words: ['donk', 's1mple', 'zywoo', 'm0nesy', 'niko', 'device', 'navi', 'vitality', 'g2', 'faze', 'spirit'] },
+  { score: 3, words: ['major', 'grand final', 'final', 'playoff', 'blast', 'iem', 'katowice', 'cologne', 'шок', 'сенсац'] },
+  { score: 2, words: ['transfer', 'bench', 'rumor', 'roster', 'update', 'patch', 'buff', 'nerf', 'скандал'] },
+  { score: 1, words: ['match', 'win', 'lose', 'map', 'ancient', 'mirage', 'inferno', 'dust2'] }
+];
+
+const HYPE_OPENERS = [
+  '🔥 ГАРЯЧЕ по CS2:',
+  '🚨 Чат, це зараз підірве сцену:',
+  '💣 Оце поворот у CS2:',
+  '😮‍💨 Шо коїться, братва:',
+  '⚡️ Свіжак, поки всі сплять:'
+];
+
+const HYPE_TAUNTS = [
+  'Якщо це правда — твітер згорить до ранку 😏',
+  'Хто ставив проти цього? Признавайтесь 😅',
+  'Пахне драмою і новими мемами 👀',
+  'Виглядає так, ніби нас чекає люта заруба 💥',
+  'Ну все, аналітикам знову без сну 🫠'
+];
+
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname))); // Serve static HTML files
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Telegram Bot Credentials (from user input)
-const BOT_TOKEN = '8617134849:AAGacGzqtU-wUpGwJr8v-AxsEEsWoVtEKQo';
-const CHAT_ID = '755843448';
-
-// Database Setup
 const dbPath = path.resolve(__dirname, 'database.sqlite');
 const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-        console.error('Error opening database', err.message);
-    } else {
-        console.log('Connected to the SQLite database.');
-        // Create table if it doesn't exist
-        db.run(`CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            phone TEXT,
-            email TEXT,
-            service TEXT,
-            message TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )`);
-    }
+  if (err) {
+    console.error('Помилка підключення БД:', err.message);
+    return;
+  }
+
+  db.run(`CREATE TABLE IF NOT EXISTS sent_news (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guid TEXT UNIQUE,
+    title TEXT,
+    link TEXT,
+    source TEXT,
+    published_at TEXT,
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  console.log('SQLite готова до роботи.');
 });
 
-// Helper function to send Telegram message
-function sendTelegramMessage(messageText) {
-    return new Promise((resolve, reject) => {
-        const postData = JSON.stringify({
-            chat_id: CHAT_ID,
-            text: messageText,
-            parse_mode: 'HTML'
-        });
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode} для ${url}`));
+        res.resume();
+        return;
+      }
 
-        const options = {
-            hostname: 'api.telegram.org',
-            port: 443,
-            path: `/bot${BOT_TOKEN}/sendMessage`,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData)
-            }
-        };
-
-        const req = https.request(options, (res) => {
-            let data = '';
-            res.on('data', (chunk) => { data += chunk; });
-            res.on('end', () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) {
-                    resolve(JSON.parse(data));
-                } else {
-                    reject(new Error(`Telegram API Error: ${res.statusCode} ${data}`));
-                }
-            });
-        });
-
-        req.on('error', (e) => reject(e));
-        req.write(postData);
-        req.end();
-    });
+      let rawData = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => (rawData += chunk));
+      res.on('end', () => resolve(rawData));
+    }).on('error', reject);
+  });
 }
 
-// API Endpoint to handle form submissions
-app.post('/api/submit', async (req, res) => {
-    try {
-        const { name, phone, email, service, project_type, message, details, length } = req.body;
-        
-        // Normalize fields based on form variations
-        const finalName = name || '';
-        const finalPhone = phone || '';
-        const finalEmail = email || '';
-        const finalService = service || project_type || 'Каналізація/Водопровід';
-        let finalMessage = message || details || '';
-        if (length) {
-            finalMessage += `\nДовжина (м): ${length}`;
-        }
+function stripCdata(v = '') {
+  return v.replace('<![CDATA[', '').replace(']]>', '').trim();
+}
 
-        // 1. Save to SQLite
-        const stmt = db.prepare('INSERT INTO leads (name, phone, email, service, message) VALUES (?, ?, ?, ?, ?)');
-        stmt.run([finalName, finalPhone, finalEmail, finalService, finalMessage], function(err) {
-            if (err) {
-                console.error('SQL Insert Error:', err);
-            } else {
-                console.log(`Lead saved to DB with ID: ${this.lastID}`);
-            }
-        });
-        stmt.finalize();
+function parseTag(block, tag) {
+  const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+  return match ? stripCdata(match[1]) : '';
+}
 
-        // 2. Format Telegram Message
-        let messageText = '<b>🔴 Нова заявка з сайту ВОДТЕПЛОКОМ</b>\n\n';
-        if (finalName) messageText += `<b>Ім'я:</b> ${finalName}\n`;
-        if (finalPhone) messageText += `<b>Телефон:</b> ${finalPhone}\n`;
-        if (finalEmail) messageText += `<b>Email:</b> ${finalEmail}\n`;
-        if (finalService) messageText += `<b>Послуга:</b> ${finalService}\n`;
-        if (finalMessage) messageText += `<b>Деталі:</b> ${finalMessage}\n`;
+function parseRssItems(xml) {
+  const items = xml.match(/<item[\s\S]*?<\/item>/gi) || [];
 
-        // 3. Send to Telegram
-        if (BOT_TOKEN && CHAT_ID) {
-            try {
-                await sendTelegramMessage(messageText);
-                console.log('Sent to Telegram');
-            } catch (err) {
-                console.error('Failed to send to Telegram:', err);
-            }
-        }
+  return items
+    .map((itemXml) => {
+      const title = parseTag(itemXml, 'title');
+      const link = parseTag(itemXml, 'link');
+      const guid = parseTag(itemXml, 'guid') || link || title;
+      const pubDate = parseTag(itemXml, 'pubDate');
+      const description = parseTag(itemXml, 'description').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 
-        res.status(200).json({ success: true, message: 'Заявка успішно збережена та відправлена.' });
+      return { title, link, guid, pubDate, description };
+    })
+    .filter((item) => item.title && item.link && item.guid);
+}
 
-    } catch (error) {
-        console.error('Server error processing submission:', error);
-        res.status(500).json({ success: false, message: 'Внутрішня помилка сервера.' });
+function scoreHype(news) {
+  const txt = `${news.title} ${news.description || ''}`.toLowerCase();
+  let score = 0;
+
+  HYPE_RULES.forEach((rule) => {
+    if (rule.words.some((w) => txt.includes(w))) {
+      score += rule.score;
     }
+  });
+
+  if (/!/.test(news.title)) score += 1;
+  if (/[A-Z]{3,}/.test(news.title)) score += 1;
+
+  return score;
+}
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function cleanupTitle(title = '') {
+  return title.replace(/\s+/g, ' ').trim();
+}
+
+function formatHypeMessage(news) {
+  const headline = cleanupTitle(news.title);
+  return [
+    pick(HYPE_OPENERS),
+    '',
+    `🎮 ${headline}`,
+    '',
+    pick(HYPE_TAUNTS)
+  ].join('\n');
+}
+
+function isAlreadySent(guid) {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT id FROM sent_news WHERE guid = ?', [guid], (err, row) => {
+      if (err) reject(err);
+      else resolve(Boolean(row));
+    });
+  });
+}
+
+function markAsSent(news) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      'INSERT INTO sent_news (guid, title, link, source, published_at) VALUES (?, ?, ?, ?, ?)',
+      [news.guid, news.title, news.link, news.source, news.pubDate || null],
+      (err) => {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+function sendTelegramMessage(text) {
+  if (!BOT_TOKEN || !CHAT_ID) {
+    console.warn('BOT_TOKEN/CHAT_ID не задані — відправку в Telegram пропущено.');
+    return Promise.resolve();
+  }
+
+  const postData = JSON.stringify({
+    chat_id: CHAT_ID,
+    text,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: 'api.telegram.org',
+        port: 443,
+        path: `/bot${BOT_TOKEN}/sendMessage`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => (data += chunk));
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve();
+          } else {
+            reject(new Error(`Telegram API помилка: ${res.statusCode}, ${data}`));
+          }
+        });
+      }
+    );
+
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+async function checkFeed(feed) {
+  const xml = await httpGet(feed.url);
+  const items = parseRssItems(xml);
+
+  for (const item of items.reverse()) {
+    const news = { ...item, source: feed.name };
+    const exists = await isAlreadySent(news.guid);
+    if (exists) continue;
+
+    const hypeScore = scoreHype(news);
+    if (hypeScore < HYPE_THRESHOLD) {
+      await markAsSent(news);
+      console.log(`Пропущено як не-хайп: ${news.title} (score=${hypeScore})`);
+      continue;
+    }
+
+    await sendTelegramMessage(formatHypeMessage(news));
+    await markAsSent(news);
+    console.log(`Відправлено хайп: ${news.title} (score=${hypeScore})`);
+  }
+}
+
+async function runNewsPolling() {
+  console.log('Запуск перевірки новин...');
+  for (const feed of FEEDS) {
+    try {
+      await checkFeed(feed);
+    } catch (err) {
+      console.error(`Помилка фіда ${feed.name}:`, err.message);
+    }
+  }
+}
+
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'cs2-news-bot',
+    feeds: FEEDS,
+    pollIntervalMinutes: POLL_INTERVAL_MINUTES,
+    hypeThreshold: HYPE_THRESHOLD
+  });
 });
 
-// Start Server
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+  console.log(`CS2 News bot server запущено на http://localhost:${PORT}`);
+  runNewsPolling();
+  setInterval(runNewsPolling, POLL_INTERVAL_MINUTES * 60 * 1000);
 });
