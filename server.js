@@ -121,6 +121,54 @@ function parseTag(block, tag) {
 function parseRssItems(xml) {
   const items = xml.match(/<item[\s\S]*?<\/item>/gi) || [];
 
+  return items
+    .map((itemXml) => {
+      const title = parseTag(itemXml, 'title');
+      const link = parseTag(itemXml, 'link');
+      const guid = parseTag(itemXml, 'guid') || link || title;
+      const pubDate = parseTag(itemXml, 'pubDate');
+      const description = parseTag(itemXml, 'description').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+      return { title, link, guid, pubDate, description };
+    })
+    .filter((item) => item.title && item.link && item.guid);
+}
+
+function scoreHype(news) {
+  const txt = `${news.title} ${news.description || ''}`.toLowerCase();
+  let score = 0;
+
+  HYPE_RULES.forEach((rule) => {
+    if (rule.words.some((w) => txt.includes(w))) {
+      score += rule.score;
+    }
+  });
+
+  if (/!/.test(news.title)) score += 1;
+  if (/[A-Z]{3,}/.test(news.title)) score += 1;
+
+  return score;
+}
+
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function cleanupTitle(title = '') {
+  return title.replace(/\s+/g, ' ').trim();
+}
+
+function formatHypeMessage(news) {
+  const headline = cleanupTitle(news.title);
+  return [
+    pick(HYPE_OPENERS),
+    '',
+    `🎮 ${headline}`,
+    '',
+    pick(HYPE_TAUNTS)
+  ].join('\n');
+}
+
   return items.map((itemXml) => {
     const title = parseTag(itemXml, 'title');
     const link = parseTag(itemXml, 'link');
@@ -163,6 +211,7 @@ function sendTelegramMessage(text) {
     chat_id: CHAT_ID,
     text,
     parse_mode: 'HTML',
+    disable_web_page_preview: true
     disable_web_page_preview: false
   });
 
@@ -199,6 +248,28 @@ function sendTelegramMessage(text) {
     req.write(postData);
     req.end();
   });
+}
+
+async function checkFeed(feed) {
+  const xml = await httpGet(feed.url);
+  const items = parseRssItems(xml);
+
+  for (const item of items.reverse()) {
+    const news = { ...item, source: feed.name };
+    const exists = await isAlreadySent(news.guid);
+    if (exists) continue;
+
+    const hypeScore = scoreHype(news);
+    if (hypeScore < HYPE_THRESHOLD) {
+      await markAsSent(news);
+      console.log(`Пропущено як не-хайп: ${news.title} (score=${hypeScore})`);
+      continue;
+    }
+
+    await sendTelegramMessage(formatHypeMessage(news));
+    await markAsSent(news);
+    console.log(`Відправлено хайп: ${news.title} (score=${hypeScore})`);
+  }
 }
 
 function formatTelegramNews(news) {
