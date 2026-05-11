@@ -6,25 +6,38 @@
 - не дублює вже відправлені новини (SQLite);
 - текст і службові повідомлення — українською.
 
-## Запуск
+## Швидкий запуск (автономний)
 
 1. Встановити залежності:
 ```bash
 npm install
 ```
 
-2. Задати змінні середовища:
-```bash
-export BOT_TOKEN="<telegram_bot_token>"
-export CHAT_ID="<telegram_chat_id>"
-export POLL_INTERVAL_MINUTES=10
-```
-
-3. Запустити:
+2. Запустити:
 ```bash
 node server.js
 ```
 
-## Health check
+У цьому режимі бот працює **автономно без Telegram**: збирає новини та зберігає їх у `database.sqlite`.
 
-`GET /health`
+## Запуск з Telegram
+
+Створи `.env` в корені проєкту:
+
+```bash
+BOT_TOKEN="<telegram_bot_token>"
+CHAT_ID="<telegram_chat_id>"
+POLL_INTERVAL_MINUTES=10
+HTTP_TIMEOUT_MS=15000
+PORT=3000
+```
+
+Потім запусти:
+```bash
+node server.js
+```
+
+## Доступні endpoints
+
+- `GET /health` — стан сервісу, інтервал опитування та ознака автономного режиму.
+- `GET /cs2newsua-banner.svg` — шапка каналу.
