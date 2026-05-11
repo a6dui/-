@@ -5,10 +5,16 @@ const https = require('https');
 const http = require('http');
 const sqlite3 = require('sqlite3').verbose();
 function loadEnvFile() {
-  const envPath = path.resolve(__dirname, '.env');
-  if (!require('fs').existsSync(envPath)) return;
+  const fs = require('fs');
+  const candidates = [
+    path.resolve(__dirname, '.env'),
+    path.resolve(__dirname, 'env/.env')
+  ];
 
-  const raw = require('fs').readFileSync(envPath, 'utf8');
+  const envPath = candidates.find((p) => fs.existsSync(p));
+  if (!envPath) return;
+
+  const raw = fs.readFileSync(envPath, 'utf8');
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
