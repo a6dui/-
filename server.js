@@ -40,6 +40,13 @@ const HYPE_TAUNTS = [
   'Ну все, аналітикам знову без сну 🫠'
 ];
 
+
+const FEEDS = [
+  { name: 'HLTV', url: 'https://www.hltv.org/rss/news' },
+  { name: 'Dust2.us', url: 'https://www.dust2.us/rss/news' },
+  { name: 'ESL Counter-Strike', url: 'https://pro.eslgaming.com/csgo/proleague/feed/' }
+];
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -141,6 +148,16 @@ function formatHypeMessage(news) {
   ].join('\n');
 }
 
+  return items.map((itemXml) => {
+    const title = parseTag(itemXml, 'title');
+    const link = parseTag(itemXml, 'link');
+    const guid = parseTag(itemXml, 'guid') || link || title;
+    const pubDate = parseTag(itemXml, 'pubDate');
+
+    return { title, link, guid, pubDate };
+  }).filter((item) => item.title && item.link && item.guid);
+}
+
 function isAlreadySent(guid) {
   return new Promise((resolve, reject) => {
     db.get('SELECT id FROM sent_news WHERE guid = ?', [guid], (err, row) => {
@@ -174,6 +191,7 @@ function sendTelegramMessage(text) {
     text,
     parse_mode: 'HTML',
     disable_web_page_preview: true
+    disable_web_page_preview: false
   });
 
   return new Promise((resolve, reject) => {
@@ -229,6 +247,32 @@ async function checkFeed(feed) {
   }
 }
 
+function formatTelegramNews(news) {
+  return [
+    '📰 <b>Нова новина по CS2</b>',
+    '',
+    `<b>Джерело:</b> ${news.source}`,
+    `<b>Заголовок:</b> ${news.title}`,
+    `<b>Посилання:</b> ${news.link}`,
+    news.pubDate ? `<b>Опубліковано:</b> ${news.pubDate}` : ''
+  ].filter(Boolean).join('\n');
+}
+
+async function checkFeed(feed) {
+  const xml = await httpGet(feed.url);
+  const items = parseRssItems(xml);
+
+  for (const item of items.reverse()) {
+    const news = { ...item, source: feed.name };
+    const exists = await isAlreadySent(news.guid);
+    if (exists) continue;
+
+    await sendTelegramMessage(formatTelegramNews(news));
+    await markAsSent(news);
+    console.log(`Відправлено: ${news.title}`);
+  }
+}
+
 async function runNewsPolling() {
   console.log('Запуск перевірки новин...');
   for (const feed of FEEDS) {
@@ -247,6 +291,7 @@ app.get('/health', (_req, res) => {
     feeds: FEEDS,
     pollIntervalMinutes: POLL_INTERVAL_MINUTES,
     hypeThreshold: HYPE_THRESHOLD
+    pollIntervalMinutes: POLL_INTERVAL_MINUTES
   });
 });
 
