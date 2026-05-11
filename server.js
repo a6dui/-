@@ -2,7 +2,28 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 const sqlite3 = require('sqlite3').verbose();
+function loadEnvFile() {
+  const envPath = path.resolve(__dirname, '.env');
+  if (!require('fs').existsSync(envPath)) return;
+
+  const raw = require('fs').readFileSync(envPath, 'utf8');
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) process.env[key] = value;
+  }
+}
+
+loadEnvFile();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,36 +31,7 @@ const PORT = process.env.PORT || 3000;
 const BOT_TOKEN = process.env.BOT_TOKEN || '';
 const CHAT_ID = process.env.CHAT_ID || '';
 const POLL_INTERVAL_MINUTES = Number(process.env.POLL_INTERVAL_MINUTES || 10);
-const HYPE_THRESHOLD = Number(process.env.HYPE_THRESHOLD || 5);
-
-const FEEDS = [
-  { name: 'HLTV', url: 'https://www.hltv.org/rss/news' },
-  { name: 'ESL Counter-Strike', url: 'https://pro.eslgaming.com/csgo/proleague/feed/' }
-];
-
-const HYPE_RULES = [
-  { score: 4, words: ['donk', 's1mple', 'zywoo', 'm0nesy', 'niko', 'device', 'navi', 'vitality', 'g2', 'faze', 'spirit'] },
-  { score: 3, words: ['major', 'grand final', 'final', 'playoff', 'blast', 'iem', 'katowice', 'cologne', 'шок', 'сенсац'] },
-  { score: 2, words: ['transfer', 'bench', 'rumor', 'roster', 'update', 'patch', 'buff', 'nerf', 'скандал'] },
-  { score: 1, words: ['match', 'win', 'lose', 'map', 'ancient', 'mirage', 'inferno', 'dust2'] }
-];
-
-const HYPE_OPENERS = [
-  '🔥 ГАРЯЧЕ по CS2:',
-  '🚨 Чат, це зараз підірве сцену:',
-  '💣 Оце поворот у CS2:',
-  '😮‍💨 Шо коїться, братва:',
-  '⚡️ Свіжак, поки всі сплять:'
-];
-
-const HYPE_TAUNTS = [
-  'Якщо це правда — твітер згорить до ранку 😏',
-  'Хто ставив проти цього? Признавайтесь 😅',
-  'Пахне драмою і новими мемами 👀',
-  'Виглядає так, ніби нас чекає люта заруба 💥',
-  'Ну все, аналітикам знову без сну 🫠'
-];
-
+const HTTP_TIMEOUT_MS = Number(process.env.HTTP_TIMEOUT_MS || 15000);
 
 const FEEDS = [
   { name: 'HLTV', url: 'https://www.hltv.org/rss/news' },
@@ -71,20 +63,43 @@ const db = new sqlite3.Database(dbPath, (err) => {
   console.log('SQLite готова до роботи.');
 });
 
-function httpGet(url) {
-  return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
-      if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode} для ${url}`));
-        res.resume();
-        return;
-      }
+function httpGet(url, redirectCount = 0) {
+  const client = url.startsWith('http://') ? http : https;
 
-      let rawData = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => (rawData += chunk));
-      res.on('end', () => resolve(rawData));
-    }).on('error', reject);
+  return new Promise((resolve, reject) => {
+    const req = client.get(
+      url,
+      {
+        headers: {
+          'User-Agent': 'CS2NewsBot/1.1 (+https://localhost)'
+        },
+        timeout: HTTP_TIMEOUT_MS
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectCount < 5) {
+          const redirectUrl = new URL(res.headers.location, url).toString();
+          res.resume();
+          resolve(httpGet(redirectUrl, redirectCount + 1));
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          reject(new Error(`HTTP ${res.statusCode} для ${url}`));
+          res.resume();
+          return;
+        }
+
+        let rawData = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => (rawData += chunk));
+        res.on('end', () => resolve(rawData));
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`Timeout ${HTTP_TIMEOUT_MS}ms для ${url}`));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -182,7 +197,7 @@ function markAsSent(news) {
 
 function sendTelegramMessage(text) {
   if (!BOT_TOKEN || !CHAT_ID) {
-    console.warn('BOT_TOKEN/CHAT_ID не задані — відправку в Telegram пропущено.');
+    console.warn('BOT_TOKEN/CHAT_ID не задані — режим автономного збору: новина збережеться в БД без Telegram.');
     return Promise.resolve();
   }
 
@@ -204,7 +219,8 @@ function sendTelegramMessage(text) {
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(postData)
-        }
+        },
+        timeout: HTTP_TIMEOUT_MS
       },
       (res) => {
         let data = '';
@@ -219,6 +235,9 @@ function sendTelegramMessage(text) {
       }
     );
 
+    req.on('timeout', () => {
+      req.destroy(new Error(`Timeout ${HTTP_TIMEOUT_MS}ms Telegram API`));
+    });
     req.on('error', reject);
     req.write(postData);
     req.end();
@@ -267,20 +286,35 @@ async function checkFeed(feed) {
     const exists = await isAlreadySent(news.guid);
     if (exists) continue;
 
-    await sendTelegramMessage(formatTelegramNews(news));
-    await markAsSent(news);
-    console.log(`Відправлено: ${news.title}`);
+    try {
+      await sendTelegramMessage(formatTelegramNews(news));
+      await markAsSent(news);
+      console.log(`Оброблено: ${news.title}`);
+    } catch (err) {
+      console.error(`Помилка відправки новини: ${err.message}`);
+    }
   }
 }
 
+let isPolling = false;
 async function runNewsPolling() {
+  if (isPolling) {
+    console.warn('Попередній цикл ще виконується — цей цикл пропущено.');
+    return;
+  }
+
+  isPolling = true;
   console.log('Запуск перевірки новин...');
-  for (const feed of FEEDS) {
-    try {
-      await checkFeed(feed);
-    } catch (err) {
-      console.error(`Помилка фіда ${feed.name}:`, err.message);
+  try {
+    for (const feed of FEEDS) {
+      try {
+        await checkFeed(feed);
+      } catch (err) {
+        console.error(`Помилка фіда ${feed.name}:`, err.message);
+      }
     }
+  } finally {
+    isPolling = false;
   }
 }
 
@@ -290,13 +324,15 @@ app.get('/health', (_req, res) => {
     service: 'cs2-news-bot',
     feeds: FEEDS,
     pollIntervalMinutes: POLL_INTERVAL_MINUTES,
-    hypeThreshold: HYPE_THRESHOLD
-    pollIntervalMinutes: POLL_INTERVAL_MINUTES
+    autonomousMode: !BOT_TOKEN || !CHAT_ID
   });
 });
 
 app.listen(PORT, () => {
   console.log(`CS2 News bot server запущено на http://localhost:${PORT}`);
+  if (!BOT_TOKEN || !CHAT_ID) {
+    console.log('BOT_TOKEN/CHAT_ID не задані. Бот працює автономно: збирає й записує новини в SQLite.');
+  }
   runNewsPolling();
   setInterval(runNewsPolling, POLL_INTERVAL_MINUTES * 60 * 1000);
 });
