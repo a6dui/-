@@ -1,0 +1,47 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="CS2NEWSUA banner">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#090d1d"/>
+      <stop offset="50%" stop-color="#101b3a"/>
+      <stop offset="100%" stop-color="#271327"/>
+    </linearGradient>
+    <radialGradient id="blueGlow" cx="20%" cy="20%" r="45%">
+      <stop offset="0%" stop-color="#00d0ff" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#00d0ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orangeGlow" cx="85%" cy="20%" r="42%">
+      <stop offset="0%" stop-color="#ff8800" stop-opacity="0.75"/>
+      <stop offset="100%" stop-color="#ff8800" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="textGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#68f6ff"/>
+      <stop offset="100%" stop-color="#ff9b2f"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <pattern id="diagonal" width="120" height="120" patternUnits="userSpaceOnUse" patternTransform="skewX(-20)">
+      <rect width="40" height="120" fill="rgba(255,255,255,0.06)"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#blueGlow)"/>
+  <rect width="1600" height="900" fill="url(#orangeGlow)"/>
+  <rect width="1600" height="900" fill="url(#diagonal)" opacity="0.45"/>
+
+  <g opacity="0.35">
+    <circle cx="210" cy="760" r="220" fill="#2f79ff"/>
+    <circle cx="1370" cy="720" r="260" fill="#962cff"/>
+  </g>
+
+  <rect x="26" y="26" width="1548" height="848" rx="18" fill="none" stroke="#11d2ff" stroke-width="4" opacity="0.8"/>
+
+  <g filter="url(#softGlow)">
+    <text x="800" y="490" text-anchor="middle" font-size="188" font-family="Inter,Segoe UI,Arial,sans-serif" font-weight="900" letter-spacing="4" fill="#061227" stroke="#061227" stroke-width="14">CS2NEWSUA</text>
+    <text x="800" y="490" text-anchor="middle" font-size="188" font-family="Inter,Segoe UI,Arial,sans-serif" font-weight="900" letter-spacing="4" fill="url(#textGrad)">CS2NEWSUA</text>
+  </g>
+
+  <text x="800" y="580" text-anchor="middle" font-size="58" font-family="Inter,Segoe UI,Arial,sans-serif" fill="#c8ebff" opacity="0.95">Telegram channel • CS2 updates &amp; breaking news</text>
+</svg>
